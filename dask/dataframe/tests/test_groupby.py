@@ -2148,3 +2148,100 @@ def test_groupby_transform_ufunc_partitioning(npartitions, indexed):
                 lambda series: series - series.mean()
             ),
         )
+
+@pytest.mark.xfail
+def test_df_and_series_namedagg_matches_pandas():
+    # Current status: dataframe passes, series fails.
+    pdf = pd.DataFrame(
+        {"kind": ["cat", "dog", "cat", "dog"], "height": [9.1, 6.0, 9.5, 34.0]}
+    )
+    agg_dict = {
+        "min_height": pd.NamedAgg(column="height", aggfunc="min"),
+        "max_height": pd.NamedAgg(column="height", aggfunc="max"),
+    }
+    ddf = dd.from_pandas(pdf, npartitions=1)
+    agg_pd = pdf.groupby("kind").agg(**agg_dict)
+    agg_dd = ddf.groupby("kind").agg(**agg_dict).compute()
+    assert_eq(agg_pd, agg_dd)
+
+    agg_ps = pdf["height"].groupby(pdf["kind"]).agg(**agg_dict)
+    agg_ds = ddf["height"].groupby(ddf["kind"]).agg(**agg_dict).compute()
+    assert_eq(agg_ps, agg_ds)
+
+def test_no_args_raises():
+    ddf = dd.from_pandas(pd.DataFrame({"a": [1,1], "b": [1, 2]}), 1)
+    # Test for DataFrame
+    with pytest.raises(TypeError):
+        ddf.groupby("a").aggregate()
+    # Test for Series:
+    with pytest.raises(TypeError):
+        ddf.b.groupby(ddf.a).aggregate()
+    # Note: pandas allows ddf.groupby("a").aggregate([]), but dask does not.
+
+@pytest.mark.xfail
+def test_agg_relabel():
+    ddf = dd.from_pandas(pd.DataFrame(
+        {"group": ["a", "a", "b", "b"], "A": [0, 1, 2, 3], "B": [5, 6, 7, 8]}
+    ), 1)
+    result = ddf.groupby("group").agg(a_max=("A", "max"), b_max=("B", "max")).compute()
+    expected = pd.DataFrame(
+        {"a_max": [1, 3], "b_max": [6, 8]},
+        index=pd.Index(["a", "b"], name="group"),
+        columns=["a_max", "b_max"],
+    )
+    assert_eq(result, expected)
+
+    # order invariance
+    p98 = functools.partial(np.percentile, q=98)
+    result = df.groupby("group").agg(
+        b_min=pd.NamedAgg("B", "min"),
+        a_min=pd.NamedAgg("A", min),
+        a_mean=pd.NamedAgg("A", np.mean),
+        a_max=pd.NamedAgg("A", "max"),
+        b_max=pd.NamedAgg("B", "max"),
+        a_98=pd.NamedAgg("A", p98),
+    ).compute()
+    expected = pd.DataFrame(
+        {
+            "b_min": [5, 7],
+            "a_min": [0, 2],
+            "a_mean": [0.5, 2.5],
+            "a_max": [1, 3],
+            "b_max": [6, 8],
+            "a_98": [0.98, 2.98],
+        },
+        index=pd.Index(["a", "b"], name="group"),
+        columns=["b_min", "a_min", "a_mean", "a_max", "b_max", "a_98"],
+    )
+    # if not compat.PY36:
+        # expected = expected[["a_98", "a_max", "a_mean", "a_min", "b_max", "b_min"]]
+    assert_eq(result, expected)
+
+def test_agg_relabel_non_identifier():
+    ddf = dd.from_pandas(pd.DataFrame(
+        {"group": ["a", "a", "b", "b"], "A": [0, 1, 2, 3], "B": [5, 6, 7, 8]}
+    ), 1)
+    result = ddf.groupby("group").agg(**{"my col": pd.NamedAgg("A", "max")}).compute()
+    expected = pd.DataFrame(
+        {"my col": [1, 3]}, index=pd.Index(["a", "b"], name="group")
+    )
+    assert_eq(result, expected)
+
+def test_agg_relabel_other_raises():
+    ddf = dd.from_pandas(pd.DataFrame({"A": [0, 0, 1], "B": [1, 2, 3]}), 2)
+    grouped = ddf.groupby("A")
+    with pytest.raises(TypeError):
+        grouped.agg(foo=1)
+
+    with pytest.raises(TypeError):
+        grouped.agg()
+
+    with pytest.raises(TypeError):
+        grouped.agg(a=pd.NamedAgg("B", "max"), b=(1, 2, 3))
+
+@pytest.mark.xfail
+def test_missing_raises():
+    ddf = dd.from_pandas(pd.DataFrame({"A": [0, 1], "B": [1, 2]}), 1)
+    # Currently raises a metadata error, not a missing col error
+    with pytest.raises(KeyError, match="Column 'C' does not exist"):
+        ddf.groupby("A").agg(c=pd.NamedAgg("C", "sum"))

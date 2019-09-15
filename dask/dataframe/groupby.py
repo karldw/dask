@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from pandas.core.groupby.generic import _normalize_keyword_aggregation
 from .core import (
     DataFrame,
     Series,
@@ -1426,7 +1427,24 @@ class _GroupBy(object):
             token=token,
         )
 
-    def aggregate(self, arg, split_every, split_out=1):
+    def aggregate(self, arg, split_every, split_out=1, **kwargs):
+
+        if len(kwargs) == 0:
+            if arg is None:
+                # nicer error message
+                raise TypeError("Must provide either 'arg' or NamedAgg arguments")
+            relabeling = False
+        else:
+            if arg is not None:
+                raise TypeError("Cannot provide both 'arg' and NamedAgg arguments")
+            if all([isinstance(k, pd.NamedAgg) for k in kwargs.values()]):
+                relabeling = True
+            else: # at least one kwarg was not a NamedAgg
+                raise TypeError("Only pd.NamedAgg keyword arguments are allowed")
+        if relabeling:
+            arg, columns, order = _normalize_keyword_aggregation(kwargs)
+            kwargs = {}
+
         if isinstance(self.obj, DataFrame):
             if isinstance(self.index, tuple) or np.isscalar(self.index):
                 group_columns = {self.index}
@@ -1488,7 +1506,7 @@ class _GroupBy(object):
         else:
             chunk_args = [self.obj] + self.index
 
-        return aca(
+        result = aca(
             chunk_args,
             chunk=_groupby_apply_funcs,
             chunk_kwargs=dict(funcs=chunk_funcs),
@@ -1503,6 +1521,10 @@ class _GroupBy(object):
             split_out=split_out,
             split_out_setup=split_out_on_index,
         )
+        if relabeling:
+            result = result[order]
+            result.columns = columns
+        return result
 
     @insert_meta_param_description(pad=12)
     def apply(self, func, *args, **kwargs):
@@ -1709,17 +1731,19 @@ class DataFrameGroupBy(_GroupBy):
             raise AttributeError(e)
 
     @derived_from(pd.core.groupby.DataFrameGroupBy)
-    def aggregate(self, arg, split_every=None, split_out=1):
+    def aggregate(self, arg=None, split_every=None, split_out=1, **kwargs):
         if arg == "size":
             return self.size()
 
         return super(DataFrameGroupBy, self).aggregate(
-            arg, split_every=split_every, split_out=split_out
+            arg, split_every=split_every, split_out=split_out, **kwargs
         )
 
     @derived_from(pd.core.groupby.DataFrameGroupBy)
-    def agg(self, arg, split_every=None, split_out=1):
-        return self.aggregate(arg, split_every=split_every, split_out=split_out)
+    def agg(self, arg=None, split_every=None, split_out=1, **kwargs):
+        return self.aggregate(
+            arg, split_every=split_every, split_out=split_out, **kwargs
+        )
 
 
 class SeriesGroupBy(_GroupBy):
@@ -1772,9 +1796,9 @@ class SeriesGroupBy(_GroupBy):
         )
 
     @derived_from(pd.core.groupby.SeriesGroupBy)
-    def aggregate(self, arg, split_every=None, split_out=1):
+    def aggregate(self, arg=None, split_every=None, split_out=1, **kwargs):
         result = super(SeriesGroupBy, self).aggregate(
-            arg, split_every=split_every, split_out=split_out
+            arg, split_every=split_every, split_out=split_out, **kwargs
         )
         if self._slice:
             result = result[self._slice]
@@ -1785,5 +1809,7 @@ class SeriesGroupBy(_GroupBy):
         return result
 
     @derived_from(pd.core.groupby.SeriesGroupBy)
-    def agg(self, arg, split_every=None, split_out=1):
-        return self.aggregate(arg, split_every=split_every, split_out=split_out)
+    def agg(self, arg=None, split_every=None, split_out=1, **kwargs):
+        return self.aggregate(
+            arg, split_every=split_every, split_out=split_out, **kwargs
+        )
